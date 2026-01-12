@@ -4,7 +4,7 @@
 [![Test](https://github.com/jncraton/brotli-polyfill/actions/workflows/test.yml/badge.svg)](https://github.com/jncraton/brotli-polyfill/actions/workflows/test.yml)
 [![Deploy](https://github.com/jncraton/brotli-polyfill/actions/workflows/deploy.yml/badge.svg)](https://github.com/jncraton/brotli-polyfill/actions/workflows/deploy.yml)
 
-Drop Brotli anywhere—no browser support required. This polyfill brings RFC 7932 Brotli compression and decompression to environments where `CompressionStream`/`DecompressionStream` lack `"brotli"` support, while staying byte-for-byte compatible with modern runtimes (Node.js 24.7+).
+Drop-in Brotli support everywhere—even when browsers ship without it. This polyfill brings RFC 7932 Brotli compression and decompression to environments where `CompressionStream`/`DecompressionStream` lack `"brotli"` support, while staying byte-for-byte compatible with modern runtimes (Node.js 24.7+).
 
 > [!IMPORTANT]
 > **Single file. Vanilla JavaScript. Zero dependencies.** Ship `brotli.js` or the minified build without touching your package.json.
@@ -48,12 +48,15 @@ Include the script (classic script, not a module) to expose the globals `BrotliC
 importScripts("brotli.min.js");
 
 self.addEventListener("fetch", (event) => {
-  event.respondWith(
+  // Forward the request as usual
+  event.respondWith(fetch(event.request));
+
+  // Also compress the body for lightweight logging/analytics
+  event.waitUntil(
     (async () => {
-      const body = await event.request.text();
+      const body = await event.request.clone().text();
       const compressed = await BrotliCompress(body);
-      // Persist compressed payload, forward to server, etc.
-      return new Response(await BrotliDecompress(compressed));
+      await fetch("/log", { method: "POST", body: compressed });
     })(),
   );
 });
