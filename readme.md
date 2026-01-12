@@ -32,6 +32,7 @@ async function BrotliDecompress(compressed_text) {
 
     return await blob.text()
 }
+```
 
 ## Testing
 
