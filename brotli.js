@@ -855,56 +855,798 @@ class BitWriter {
   }
 }
 
-// Brotli compressor - produces uncompressed but valid Brotli streams
-// This matches the output format of Node's brotli with quality=0
+// Hash function for 4-byte sequences
+function hash4(data, pos) {
+  if (pos + 4 > data.length) return 0;
+  return (
+    ((data[pos] << 24) |
+      (data[pos + 1] << 16) |
+      (data[pos + 2] << 8) |
+      data[pos + 3]) >>>
+    0
+  );
+}
+
+// Find longest match using hash table
+function findMatch(data, pos, hashTable, windowSize) {
+  if (pos + 4 > data.length) return null;
+
+  const h = hash4(data, pos) % hashTable.length;
+  const candidates = hashTable[h];
+  if (!candidates || candidates.length === 0) return null;
+
+  let bestLen = 3;
+  let bestDist = 0;
+
+  for (let i = candidates.length - 1; i >= 0; i--) {
+    const matchPos = candidates[i];
+    const dist = pos - matchPos;
+    if (dist <= 0 || dist > windowSize) continue;
+
+    // Check minimum match
+    if (
+      data[matchPos] !== data[pos] ||
+      data[matchPos + 1] !== data[pos + 1] ||
+      data[matchPos + 2] !== data[pos + 2]
+    )
+      continue;
+
+    // Extend match
+    let len = 3;
+    const maxLen = Math.min(data.length - pos, 16793598); // Max copy length in Brotli
+    while (len < maxLen && data[matchPos + len] === data[pos + len]) {
+      len++;
+    }
+
+    if (len > bestLen) {
+      bestLen = len;
+      bestDist = dist;
+      if (len >= 258) break; // Good enough
+    }
+  }
+
+  return bestDist > 0 ? { length: bestLen, distance: bestDist } : null;
+}
+
+// Update hash table with current position
+function updateHash(data, pos, hashTable) {
+  if (pos + 4 > data.length) return;
+
+  const h = hash4(data, pos) % hashTable.length;
+  if (!hashTable[h]) {
+    hashTable[h] = [];
+  }
+  hashTable[h].push(pos);
+  // Keep chain limited
+  if (hashTable[h].length > 16) {
+    hashTable[h].shift();
+  }
+}
+
+// LZ77 compression: convert input to commands
+// Returns array of {literals: Uint8Array, copyLen: number, distance: number}
+function lz77Compress(input) {
+  const commands = [];
+  const hashTable = new Array(65536);
+  const windowSize = 1 << 22; // 4MB window
+
+  let pos = 0;
+  let literalBuffer = [];
+
+  while (pos < input.length) {
+    const match = findMatch(input, pos, hashTable, windowSize);
+
+    if (match && match.length >= 4) {
+      // Emit command with pending literals and this match
+      commands.push({
+        literals: new Uint8Array(literalBuffer),
+        copyLen: match.length,
+        distance: match.distance,
+      });
+      literalBuffer = [];
+
+      // Update hash for all positions in the match
+      for (let i = 0; i < match.length; i++) {
+        updateHash(input, pos + i, hashTable);
+      }
+      pos += match.length;
+    } else {
+      // Add literal
+      literalBuffer.push(input[pos]);
+      updateHash(input, pos, hashTable);
+      pos++;
+
+      // Flush literals periodically
+      if (literalBuffer.length >= 16383) {
+        commands.push({
+          literals: new Uint8Array(literalBuffer),
+          copyLen: 0,
+          distance: 0,
+        });
+        literalBuffer = [];
+      }
+    }
+  }
+
+  // Emit remaining literals
+  if (literalBuffer.length > 0) {
+    commands.push({
+      literals: new Uint8Array(literalBuffer),
+      copyLen: 0,
+      distance: 0,
+    });
+  }
+
+  return commands;
+}
+
+// Insert length encoding table (RFC 7932 Section 5)
+const kInsertLengthTable = [
+  // [baseLen, extraBits] for codes 0-23
+  [0, 0],
+  [1, 0],
+  [2, 0],
+  [3, 0],
+  [4, 0],
+  [5, 0],
+  [6, 1],
+  [8, 1],
+  [10, 2],
+  [14, 2],
+  [18, 3],
+  [26, 3],
+  [34, 4],
+  [50, 4],
+  [66, 5],
+  [98, 5],
+  [130, 6],
+  [194, 7],
+  [322, 8],
+  [578, 9],
+  [1090, 10],
+  [2114, 12],
+  [6210, 14],
+  [22594, 24],
+];
+
+// Copy length encoding table (RFC 7932 Section 5)
+const kCopyLengthTable = [
+  // [baseLen, extraBits] for codes 0-23
+  [2, 0],
+  [3, 0],
+  [4, 0],
+  [5, 0],
+  [6, 0],
+  [7, 0],
+  [8, 0],
+  [9, 0],
+  [10, 1],
+  [12, 1],
+  [14, 2],
+  [18, 2],
+  [22, 3],
+  [30, 3],
+  [38, 4],
+  [54, 4],
+  [70, 5],
+  [102, 5],
+  [134, 6],
+  [198, 7],
+  [326, 8],
+  [582, 9],
+  [1094, 10],
+  [2118, 24],
+];
+
+// Encode insert length
+function encodeInsertLen(len) {
+  for (let i = kInsertLengthTable.length - 1; i >= 0; i--) {
+    const [base, extraBits] = kInsertLengthTable[i];
+    if (len >= base) {
+      return { code: i, extraBits, extra: len - base };
+    }
+  }
+  return { code: 0, extraBits: 0, extra: 0 };
+}
+
+// Encode copy length
+function encodeCopyLen(len) {
+  for (let i = kCopyLengthTable.length - 1; i >= 0; i--) {
+    const [base, extraBits] = kCopyLengthTable[i];
+    if (len >= base) {
+      return { code: i, extraBits, extra: len - base };
+    }
+  }
+  return { code: 0, extraBits: 0, extra: 0 };
+}
+
+// Encode distance (for npostfix=0, ndirect=0)
+function encodeDistance(dist) {
+  // Distance codes 0-15 are for distance ring buffer
+  // Codes 16+ encode explicit distances
+  // For code c >= 16:
+  //   hcode = c - 16
+  //   extraBits = 1 + (hcode >> 1)
+  //   dextra = (hcode >> 1) + 1
+  //   base = ((2 + (hcode & 1)) << extraBits) - 3
+  //   dist = base + extra
+
+  for (let code = 16; code < 64; code++) {
+    const hcode = code - 16;
+    const extraBits = 1 + (hcode >> 1);
+    const base = ((2 + (hcode & 1)) << extraBits) - 3;
+    const maxExtra = (1 << extraBits) - 1;
+
+    if (dist >= base && dist <= base + maxExtra) {
+      return { code, extraBits, extra: dist - base };
+    }
+  }
+
+  // For very large distances (should not happen with reasonable window)
+  return { code: 16, extraBits: 1, extra: Math.max(0, dist - 1) };
+}
+
+// Get insert-and-copy command code (RFC 7932 Section 5, Table 6)
+// Must match the decoding in decodeInsertAndCopy
+function getCommandCode(insertCode, copyCode, distCode) {
+  // Insert-only commands: codes 0-127
+  if (copyCode === undefined || copyCode < 0) {
+    return insertCode;
+  }
+
+  // Insert-and-copy commands are in range 128-703
+  // The decompressor uses:
+  //   rangeIdx = (cmdCode - 128) >> 6
+  //   insertExtra = ((cmdCode - 128) >> 3) & 7
+  //   copyExtra = (cmdCode - 128) & 7
+  //   insertCode = kInsertRangeLut[rangeIdx] + insertExtra
+  //   copyCode = kCopyRangeLut[rangeIdx] + copyExtra
+  
+  // kInsertRangeLut = [0, 0, 8, 8, 0, 16, 8, 16, 16]
+  // kCopyRangeLut   = [0, 8, 0, 8, 16, 0, 16, 8, 16]
+  
+  // We need to find rangeIdx, insertExtra, copyExtra such that:
+  //   insertCode = kInsertRangeLut[rangeIdx] + insertExtra (insertExtra < 8)
+  //   copyCode = kCopyRangeLut[rangeIdx] + copyExtra (copyExtra < 8)
+  
+  const insertOffsets = [0, 0, 8, 8, 0, 16, 8, 16, 16];
+  const copyOffsets = [0, 8, 0, 8, 16, 0, 16, 8, 16];
+  
+  // Find a valid rangeIdx
+  for (let rangeIdx = 0; rangeIdx < 9; rangeIdx++) {
+    const insertOff = insertOffsets[rangeIdx];
+    const copyOff = copyOffsets[rangeIdx];
+    
+    const insertExtra = insertCode - insertOff;
+    const copyExtra = copyCode - copyOff;
+    
+    if (insertExtra >= 0 && insertExtra < 8 && copyExtra >= 0 && copyExtra < 8) {
+      // Found valid encoding
+      const adjustedCmd = (rangeIdx << 6) | (insertExtra << 3) | copyExtra;
+      return 128 + adjustedCmd;
+    }
+  }
+  
+  // Fallback - shouldn't happen for valid insert/copy codes
+  return 128;
+}
+
+// Build canonical Huffman codes from frequencies
+function buildHuffmanCodes(freq, maxBits) {
+  // Find symbols with non-zero frequency
+  const symbols = [];
+  for (let i = 0; i < freq.length; i++) {
+    if (freq[i] > 0) {
+      symbols.push({ sym: i, freq: freq[i] });
+    }
+  }
+
+  if (symbols.length === 0) {
+    return { lengths: new Uint8Array(freq.length), codes: {} };
+  }
+
+  if (symbols.length === 1) {
+    const lengths = new Uint8Array(freq.length);
+    lengths[symbols[0].sym] = 1;
+    return {
+      lengths,
+      codes: { [symbols[0].sym]: { bits: 0, len: 1 } },
+    };
+  }
+
+  // Sort by frequency
+  symbols.sort((a, b) => a.freq - b.freq || a.sym - b.sym);
+
+  // Assign code lengths using a simplified algorithm
+  // This assigns shorter codes to more frequent symbols
+  const n = symbols.length;
+  const lengths = new Uint8Array(freq.length);
+
+  // Calculate target lengths based on frequency ranking
+  for (let i = 0; i < n; i++) {
+    // More frequent symbols (higher index after sort) get shorter codes
+    const rank = n - 1 - i;
+    let len = 1;
+    let available = 2;
+    while (available <= rank && len < maxBits) {
+      len++;
+      available *= 2;
+    }
+    lengths[symbols[i].sym] = Math.min(len, maxBits);
+  }
+
+  // Adjust lengths to satisfy Kraft inequality
+  let kraft = 0;
+  for (let i = 0; i < freq.length; i++) {
+    if (lengths[i] > 0) {
+      kraft += 1 << (maxBits - lengths[i]);
+    }
+  }
+
+  const target = 1 << maxBits;
+  while (kraft > target) {
+    // Increase some code lengths
+    for (let i = 0; i < freq.length && kraft > target; i++) {
+      if (lengths[i] > 0 && lengths[i] < maxBits) {
+        kraft -= 1 << (maxBits - lengths[i]);
+        lengths[i]++;
+        kraft += 1 << (maxBits - lengths[i]);
+      }
+    }
+  }
+
+  // Build canonical codes
+  const codes = {};
+  const maxLen = Math.max(...lengths);
+
+  if (maxLen > 0) {
+    const blCount = new Uint32Array(maxLen + 1);
+    for (let i = 0; i < lengths.length; i++) {
+      if (lengths[i] > 0) blCount[lengths[i]]++;
+    }
+
+    const nextCode = new Uint32Array(maxLen + 1);
+    let code = 0;
+    for (let bits = 1; bits <= maxLen; bits++) {
+      code = (code + blCount[bits - 1]) << 1;
+      nextCode[bits] = code;
+    }
+
+    for (let i = 0; i < lengths.length; i++) {
+      const len = lengths[i];
+      if (len > 0) {
+        let c = nextCode[len]++;
+        // Reverse bits for LSB-first encoding
+        let reversed = 0;
+        for (let j = 0; j < len; j++) {
+          reversed = (reversed << 1) | (c & 1);
+          c >>= 1;
+        }
+        codes[i] = { bits: reversed, len };
+      }
+    }
+  }
+
+  return { lengths, codes };
+}
+
+// Write simple prefix code (RFC 7932 Section 3.4)
+function writeSimplePrefixCode(bw, symbols, alphabetBits) {
+  const numSymbols = symbols.length;
+
+  // HSKIP = 1 (simple prefix code)
+  bw.writeBits(1, 2);
+
+  // NSYM - 1 (2 bits)
+  bw.writeBits(numSymbols - 1, 2);
+
+  // Symbol values (sorted)
+  symbols.sort((a, b) => a - b);
+  for (const sym of symbols) {
+    bw.writeBits(sym, alphabetBits);
+  }
+
+  // Tree select (only for 4 symbols)
+  if (numSymbols === 4) {
+    bw.writeBits(1, 1); // All lengths = 2
+  }
+}
+
+// Write complex prefix code (RFC 7932 Section 3.5)
+function writeComplexPrefixCode(bw, codeLengths, alphabetSize) {
+  // Find non-zero lengths
+  const nonZero = [];
+  for (let i = 0; i < alphabetSize; i++) {
+    if (codeLengths[i] > 0) {
+      nonZero.push(i);
+    }
+  }
+
+  // If 4 or fewer symbols, use simple prefix code
+  if (nonZero.length <= 4 && nonZero.length > 0) {
+    const alphabetBits = Math.max(1, Math.ceil(Math.log2(alphabetSize)));
+    writeSimplePrefixCode(bw, nonZero, alphabetBits);
+    return;
+  }
+
+  // HSKIP = 0 (complex code, no skip)
+  bw.writeBits(0, 2);
+
+  // Compute code length frequencies
+  const clFreq = new Uint32Array(18);
+  let maxCodeLen = 0;
+  for (let i = 0; i < alphabetSize; i++) {
+    const len = codeLengths[i] || 0;
+    clFreq[len]++;
+    if (len > maxCodeLen) maxCodeLen = len;
+  }
+
+  // Assign code length code lengths (simplified)
+  const clCodeLengths = new Uint8Array(18);
+  let space = 32;
+
+  for (let i = 0; i < 18 && space > 0; i++) {
+    const idx = kCodeLengthCodeOrder[i];
+    if (clFreq[idx] > 0) {
+      const len = space >= 16 ? 2 : space >= 8 ? 3 : 4;
+      clCodeLengths[idx] = len;
+      space -= 32 >> len;
+    }
+  }
+
+  // Write code length code lengths
+  for (let i = 0; i < 18; i++) {
+    const idx = kCodeLengthCodeOrder[i];
+    const len = clCodeLengths[idx];
+
+    if (len === 0) {
+      bw.writeBits(0, 2);
+    } else if (len === 1) {
+      bw.writeBits(1, 2);
+    } else if (len === 2) {
+      bw.writeBits(2, 2);
+    } else if (len === 3) {
+      bw.writeBits(3, 2);
+    } else if (len === 4) {
+      bw.writeBits(7, 4);
+    } else {
+      bw.writeBits(15, 4);
+    }
+
+    // Check if we've used all code space
+    if (space <= 0) break;
+  }
+
+  // Build codes for code length alphabet
+  const clCodes = {};
+  {
+    const clMaxLen = Math.max(...clCodeLengths);
+    if (clMaxLen > 0) {
+      const blCount = new Uint32Array(clMaxLen + 1);
+      for (let i = 0; i < 18; i++) {
+        if (clCodeLengths[i] > 0) blCount[clCodeLengths[i]]++;
+      }
+
+      const nextCode = new Uint32Array(clMaxLen + 1);
+      let code = 0;
+      for (let bits = 1; bits <= clMaxLen; bits++) {
+        code = (code + blCount[bits - 1]) << 1;
+        nextCode[bits] = code;
+      }
+
+      for (let i = 0; i < 18; i++) {
+        const len = clCodeLengths[i];
+        if (len > 0) {
+          let c = nextCode[len]++;
+          let reversed = 0;
+          for (let j = 0; j < len; j++) {
+            reversed = (reversed << 1) | (c & 1);
+            c >>= 1;
+          }
+          clCodes[i] = { bits: reversed, len };
+        }
+      }
+    }
+  }
+
+  // Write symbol code lengths
+  for (let i = 0; i < alphabetSize; i++) {
+    const len = codeLengths[i] || 0;
+    const entry = clCodes[len];
+    if (entry) {
+      bw.writeBits(entry.bits, entry.len);
+    } else {
+      // Fallback: write 0 length
+      bw.writeBits(0, 2);
+    }
+  }
+}
+
+// Brotli compressor
 function brotliCompress(input) {
   if (!(input instanceof Uint8Array)) {
     input = new TextEncoder().encode(input);
   }
 
-  const bw = new BitWriter();
-
-  // Empty input case
+  // Empty input
   if (input.length === 0) {
-    // WBITS = 22: first bit = 1, then 3 bits = 5 (17+5=22)
-    bw.writeBits(1, 1); // Use extended WBITS
-    bw.writeBits(5, 3); // WBITS = 17 + 5 = 22
-    // ISLAST = 1
-    bw.writeBits(1, 1);
-    // ISEMPTY = 1
-    bw.writeBits(1, 1);
+    const bw = new BitWriter();
+    bw.writeBits(1, 1); // Extended WBITS
+    bw.writeBits(5, 3); // WBITS = 22
+    bw.writeBits(1, 1); // ISLAST
+    bw.writeBits(1, 1); // ISEMPTY
     bw.alignToByte();
     return bw.toUint8Array();
   }
 
-  // Write WBITS = 22
-  bw.writeBits(1, 1); // Use extended WBITS
-  bw.writeBits(5, 3); // WBITS = 17 + 5 = 22
+  // For small inputs or when compression isn't beneficial, use uncompressed
+  if (input.length <= 32) {
+    return brotliCompressUncompressed(input);
+  }
 
-  // Write non-last uncompressed meta-block with data
-  // ISLAST = 0
-  bw.writeBits(0, 1);
+  // LZ77 compression
+  const commands = lz77Compress(input);
 
-  // MNIBBLES = 0 (4 nibbles = 16 bits for MLEN)
-  bw.writeBits(0, 2);
+  // Check if we have matches
+  let hasMatches = false;
+  for (const cmd of commands) {
+    if (cmd.copyLen > 0) {
+      hasMatches = true;
+      break;
+    }
+  }
 
-  // MLEN - 1 (16 bits)
-  bw.writeBits(input.length - 1, 16);
+  if (!hasMatches) {
+    return brotliCompressUncompressed(input);
+  }
 
-  // ISUNCOMPRESSED = 1
+  // Collect frequencies
+  const literalFreq = new Uint32Array(256);
+  const cmdFreq = new Uint32Array(704);
+  const distFreq = new Uint32Array(64);
+
+  for (const cmd of commands) {
+    for (let i = 0; i < cmd.literals.length; i++) {
+      literalFreq[cmd.literals[i]]++;
+    }
+
+    const insertEnc = encodeInsertLen(cmd.literals.length);
+    if (cmd.copyLen > 0) {
+      const copyEnc = encodeCopyLen(cmd.copyLen);
+      const distEnc = encodeDistance(cmd.distance);
+      const cmdCode = getCommandCode(insertEnc.code, copyEnc.code, distEnc.code);
+      cmdFreq[Math.min(cmdCode, 703)]++;
+      distFreq[Math.min(distEnc.code, 63)]++;
+    } else if (cmd.literals.length > 0) {
+      cmdFreq[Math.min(insertEnc.code, 127)]++;
+    }
+  }
+
+  // Count unique symbols in each alphabet
+  let litCount = 0, cmdCount = 0, distCount = 0;
+  for (let i = 0; i < 256; i++) if (literalFreq[i] > 0) litCount++;
+  for (let i = 0; i < 704; i++) if (cmdFreq[i] > 0) cmdCount++;
+  for (let i = 0; i < 64; i++) if (distFreq[i] > 0) distCount++;
+
+  // For simplicity, only use compressed format when we have <= 4 unique symbols
+  // in each alphabet (can use simple prefix codes)
+  if (litCount > 4 || cmdCount > 4 || distCount > 4) {
+    return brotliCompressUncompressed(input);
+  }
+
+  // Collect unique symbols
+  const litSymbols = [];
+  const cmdSymbols = [];
+  const distSymbols = [];
+  for (let i = 0; i < 256; i++) if (literalFreq[i] > 0) litSymbols.push(i);
+  for (let i = 0; i < 704; i++) if (cmdFreq[i] > 0) cmdSymbols.push(i);
+  for (let i = 0; i < 64; i++) if (distFreq[i] > 0) distSymbols.push(i);
+
+  // Build simple codes for each alphabet
+  const litCodes = buildSimpleCodes(litSymbols);
+  const cmdCodes = buildSimpleCodes(cmdSymbols);
+  const distCodes = buildSimpleCodes(distSymbols);
+
+  // Create compressed stream
+  const bw = new BitWriter();
+
+  // WBITS = 22
   bw.writeBits(1, 1);
+  bw.writeBits(5, 3);
 
-  // Align to byte boundary
-  bw.alignToByte();
-
-  // Write raw data
-  bw.writeBytes(input);
-
-  // Write final empty meta-block
   // ISLAST = 1
   bw.writeBits(1, 1);
-  // ISEMPTY = 1
+
+  // ISEMPTY = 0 (not empty)
+  bw.writeBits(0, 1);
+
+  // MNIBBLES and MLEN
+  const mlen = input.length;
+  if (mlen <= 1 << 16) {
+    bw.writeBits(0, 2);  // MNIBBLES = 0 (16 bits)
+    bw.writeBits(mlen - 1, 16);
+  } else if (mlen <= 1 << 20) {
+    bw.writeBits(1, 2);  // MNIBBLES = 1 (20 bits)
+    bw.writeBits(mlen - 1, 20);
+  } else {
+    bw.writeBits(2, 2);  // MNIBBLES = 2 (24 bits)
+    bw.writeBits(mlen - 1, 24);
+  }
+
+  // Block types = 1
+  bw.writeBits(0, 1); // NBLTYPESL
+  bw.writeBits(0, 1); // NBLTYPESI
+  bw.writeBits(0, 1); // NBLTYPESD
+
+  // NPOSTFIX = 0, NDIRECT = 0
+  bw.writeBits(0, 2);
+  bw.writeBits(0, 4);
+
+  // Context mode = LSB6
+  bw.writeBits(0, 2);
+
+  // Number of trees = 1
+  bw.writeBits(0, 1); // NTREESL
+  bw.writeBits(0, 1); // NTREESD
+
+  // Write simple prefix codes
+  writeSimplePrefixCode(bw, litSymbols, 8);
+  writeSimplePrefixCode(bw, cmdSymbols, 10);
+  writeSimplePrefixCode(bw, distSymbols, 6);
+
+  // Write commands
+  for (const cmd of commands) {
+    const insertLen = cmd.literals.length;
+    const insertEnc = encodeInsertLen(insertLen);
+
+    if (cmd.copyLen > 0) {
+      const copyEnc = encodeCopyLen(cmd.copyLen);
+      const distEnc = encodeDistance(cmd.distance);
+      const cmdCode = getCommandCode(insertEnc.code, copyEnc.code, distEnc.code);
+
+      const cmdEntry = cmdCodes[cmdCode];
+      if (!cmdEntry) {
+        return brotliCompressUncompressed(input);
+      }
+      bw.writeBits(cmdEntry.bits, cmdEntry.len);
+
+      if (insertEnc.extraBits > 0) {
+        bw.writeBits(insertEnc.extra, insertEnc.extraBits);
+      }
+      if (copyEnc.extraBits > 0) {
+        bw.writeBits(copyEnc.extra, copyEnc.extraBits);
+      }
+
+      for (let i = 0; i < cmd.literals.length; i++) {
+        const entry = litCodes[cmd.literals[i]];
+        if (!entry) {
+          return brotliCompressUncompressed(input);
+        }
+        bw.writeBits(entry.bits, entry.len);
+      }
+
+      const distEntry = distCodes[distEnc.code];
+      if (!distEntry) {
+        return brotliCompressUncompressed(input);
+      }
+      bw.writeBits(distEntry.bits, distEntry.len);
+      if (distEnc.extraBits > 0) {
+        bw.writeBits(distEnc.extra, distEnc.extraBits);
+      }
+    } else if (insertLen > 0) {
+      const cmdEntry = cmdCodes[insertEnc.code];
+      if (!cmdEntry) {
+        return brotliCompressUncompressed(input);
+      }
+      bw.writeBits(cmdEntry.bits, cmdEntry.len);
+
+      if (insertEnc.extraBits > 0) {
+        bw.writeBits(insertEnc.extra, insertEnc.extraBits);
+      }
+
+      for (let i = 0; i < cmd.literals.length; i++) {
+        const entry = litCodes[cmd.literals[i]];
+        if (!entry) {
+          return brotliCompressUncompressed(input);
+        }
+        bw.writeBits(entry.bits, entry.len);
+      }
+    }
+  }
+
+  bw.alignToByte();
+  const compressed = bw.toUint8Array();
+
+  // Validate by trying to decompress
+  try {
+    const decompressed = brotliDecompress(compressed);
+    // Check if decompressed matches original
+    if (decompressed.length !== input.length) {
+      return brotliCompressUncompressed(input);
+    }
+    for (let i = 0; i < input.length; i++) {
+      if (decompressed[i] !== input[i]) {
+        return brotliCompressUncompressed(input);
+      }
+    }
+  } catch {
+    // Decompression failed, use uncompressed
+    return brotliCompressUncompressed(input);
+  }
+
+  // Use compressed only if smaller
+  if (compressed.length < input.length) {
+    return compressed;
+  }
+
+  return brotliCompressUncompressed(input);
+}
+
+// Build simple codes for a list of symbols (≤4 symbols)
+function buildSimpleCodes(symbols) {
+  const codes = {};
+  const n = symbols.length;
+
+  if (n === 0) return codes;
+
+  symbols.sort((a, b) => a - b);
+
+  if (n === 1) {
+    codes[symbols[0]] = { bits: 0, len: 1 };
+  } else if (n === 2) {
+    codes[symbols[0]] = { bits: 0, len: 1 };
+    codes[symbols[1]] = { bits: 1, len: 1 };
+  } else if (n === 3) {
+    codes[symbols[0]] = { bits: 0, len: 1 };
+    codes[symbols[1]] = { bits: 2, len: 2 };
+    codes[symbols[2]] = { bits: 3, len: 2 };
+  } else if (n === 4) {
+    codes[symbols[0]] = { bits: 0, len: 2 };
+    codes[symbols[1]] = { bits: 1, len: 2 };
+    codes[symbols[2]] = { bits: 2, len: 2 };
+    codes[symbols[3]] = { bits: 3, len: 2 };
+  }
+
+  return codes;
+}
+
+// Uncompressed format
+function brotliCompressUncompressed(input) {
+  const bw = new BitWriter();
+
+  // WBITS = 22
   bw.writeBits(1, 1);
+  bw.writeBits(5, 3);
+
+  // Handle large inputs with multiple blocks
+  let pos = 0;
+  const maxBlockSize = 65536;
+
+  while (pos < input.length) {
+    const remaining = input.length - pos;
+    const blockSize = Math.min(remaining, maxBlockSize);
+
+    // ISLAST = 0 (uncompressed blocks cannot be last)
+    bw.writeBits(0, 1);
+
+    // MNIBBLES = 0 (16 bits)
+    bw.writeBits(0, 2);
+
+    // MLEN - 1
+    bw.writeBits(blockSize - 1, 16);
+
+    // ISUNCOMPRESSED = 1
+    bw.writeBits(1, 1);
+
+    bw.alignToByte();
+    bw.writeBytes(input.slice(pos, pos + blockSize));
+
+    pos += blockSize;
+  }
+
+  // Final empty meta-block
+  bw.writeBits(1, 1); // ISLAST
+  bw.writeBits(1, 1); // ISEMPTY
   bw.alignToByte();
 
   return bw.toUint8Array();
