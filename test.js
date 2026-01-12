@@ -130,6 +130,36 @@ async function runTests() {
 
   console.log(`\n${passed} tests passed, ${failed} tests failed`);
 
+  // Compression ratio tests (informational, not failing)
+  console.log("\n--- Compression Ratio Analysis ---");
+  const compressionTests = [
+    "A".repeat(1000),
+    "ABCDEFGH".repeat(125),
+    " ".repeat(10000),
+    "Hello, World! ".repeat(100),
+  ];
+
+  for (const testCase of compressionTests) {
+    const inputBytes = new TextEncoder().encode(testCase);
+    const compressed = await BrotliCompress(testCase);
+    const nativeCompressed = zlib.brotliCompressSync(Buffer.from(testCase));
+    const ratio = ((1 - compressed.length / inputBytes.length) * 100).toFixed(
+      1,
+    );
+    const nativeRatio = (
+      (1 - nativeCompressed.length / inputBytes.length) *
+      100
+    ).toFixed(1);
+
+    const label =
+      testCase.length > 30
+        ? `"${testCase.substring(0, 30)}..."`
+        : `"${testCase}"`;
+    console.log(
+      `${label} (${inputBytes.length}b): ${compressed.length}b (${ratio}% reduction) vs native ${nativeCompressed.length}b (${nativeRatio}%)`,
+    );
+  }
+
   if (failed > 0) {
     process.exit(1);
   }
