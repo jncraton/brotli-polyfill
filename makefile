@@ -11,7 +11,7 @@ brotli.min.js: main.js
 	npx uglify-js@3.19.3 --compress --mangle -- $< > $@
 	wc -c $@
 
-test: index.html
+test: test.js
 	node test.js
 
 clean:
