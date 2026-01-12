@@ -38,6 +38,8 @@ async function BrotliDecompress(compressed_text) {
 
 This software is implemented as a single file, `brotli.js`. It includes simple tests that can be run in NodeJS 24.7+. It does not use NPM or install any other packages for either deployment or testing.
 
+A number of tests are included to confirm that round-triping data values of various shapes and sizes work correctly and match the implementation in Node.
+
 Test can be run as:
 
 ```sh
