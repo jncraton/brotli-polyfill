@@ -1,7 +1,7 @@
 const fs = require("node:fs");
 const zlib = require("node:zlib");
 
-const src = fs.readFileSync("main.js", "utf-8");
+const src = fs.readFileSync("brotli.js", "utf-8");
 
 eval(
   src +

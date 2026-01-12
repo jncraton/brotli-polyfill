@@ -7,7 +7,7 @@ lint:
 format:
 	npx prettier@3.6.2 --write .
 
-brotli.min.js: main.js
+brotli.min.js: brotli.js
 	npx uglify-js@3.19.3 --compress --mangle -- $< > $@
 	wc -c $@
 
