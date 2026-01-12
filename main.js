@@ -272,11 +272,13 @@ const kContextLookup = new Uint8Array(512);
 })();
 
 // The static dictionary
+// TODO: Implement full static dictionary from RFC 7932 Appendix A for complete
+// decompression support of streams that use dictionary references.
+// Currently, only streams without dictionary references are supported.
 let staticDictionary = null;
 
 function getStaticDictionary() {
   if (staticDictionary) return staticDictionary;
-  // For simplicity, return empty dictionary - real implementation would include full static dictionary
   staticDictionary = { words: new Uint8Array(0), offsets: [] };
   return staticDictionary;
 }
@@ -666,7 +668,7 @@ function decodeInsertAndCopy(br, cmdCode) {
     if (insertCode < 6) {
       insertLen = insertCode;
     } else {
-      const idx = Math.min(insertCode - 6 + 6, kInsertLengthPrefixCode.length - 1);
+      const idx = Math.min(insertCode, kInsertLengthPrefixCode.length - 1);
       const [base, extra] = kInsertLengthPrefixCode[idx];
       insertLen = base + br.readBits(extra);
     }
@@ -675,7 +677,7 @@ function decodeInsertAndCopy(br, cmdCode) {
     if (copyCode < 8) {
       copyLen = copyCode + 2;
     } else {
-      const idx = Math.min(copyCode - 8 + 8, kCopyLengthPrefixCode.length - 1);
+      const idx = Math.min(copyCode, kCopyLengthPrefixCode.length - 1);
       const [base, extra] = kCopyLengthPrefixCode[idx];
       copyLen = base + br.readBits(extra);
     }

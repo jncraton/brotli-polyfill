@@ -5,6 +5,9 @@ const src = fs.readFileSync('main.js', 'utf-8')
 
 eval(src + ';globalThis.BrotliCompress = BrotliCompress;globalThis.BrotliDecompress = BrotliDecompress')
 
+// Maximum size for a single uncompressed meta-block (16-bit MLEN)
+const MAX_UNCOMPRESSED_BLOCK_SIZE = 65536
+
 // Test helper - asserts two values are equal
 function assertEqual(actual, expected, message) {
   if (actual !== expected) {
@@ -92,7 +95,7 @@ async function runTests() {
       // Test 3: Compressed output matches native for uncompressed blocks (small inputs)
       // Native uses uncompressed blocks for small inputs, so we should match exactly
       const nativeCompressed = zlib.brotliCompressSync(Buffer.from(testCase))
-      if (testCase.length > 0 && testCase.length <= 65536) {
+      if (testCase.length > 0 && testCase.length <= MAX_UNCOMPRESSED_BLOCK_SIZE) {
         // Check if native also uses uncompressed format (same length)
         if (nativeCompressed.length === compressed.length) {
           assertArrayEqual(
