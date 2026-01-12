@@ -4,48 +4,85 @@
 [![Test](https://github.com/jncraton/brotli-polyfill/actions/workflows/test.yml/badge.svg)](https://github.com/jncraton/brotli-polyfill/actions/workflows/test.yml)
 [![Deploy](https://github.com/jncraton/brotli-polyfill/actions/workflows/deploy.yml/badge.svg)](https://github.com/jncraton/brotli-polyfill/actions/workflows/deploy.yml)
 
-A pure-JS Brotli compression and decompressor for browsers that do not fully support the `brotli` mode in [CompressionStream](https://developer.mozilla.org/en-US/docs/Web/API/CompressionStream).
+Drop-in Brotli support everywhere—even when browsers ship without it. This polyfill brings RFC 7932 Brotli compression and decompression to environments where `CompressionStream`/`DecompressionStream` lack `"brotli"` support, while staying byte-for-byte compatible with modern runtimes (Node.js 24.7+).
 
-## Spec
+> [!IMPORTANT]
+> **Single file. Vanilla JavaScript. Zero dependencies.** Ship `brotli.js` or the minified build without touching your package.json.
 
-This package is implemented as a single-file, zero-dependency library that fully implements a brotli compressor and decompressor. It is byte-for-byte compatible with CompressionStream and DecompressionStream as implemented in NodeJS 24.7+.
+## Why this library?
 
-The package provides two functions. They are equivalent to the following, but implement in pure JS rather than using CompressionStream and DecompressionStream.
+- Fill the gap in browsers and workers that do not ship Brotli streaming primitives.
+- Keep payloads small with a minified, self-contained build.
+- Interop with native implementations: compressed bytes round-trip between this polyfill and Node’s built-ins.
+- Works anywhere classic scripts run: main thread, Service Workers, Web Workers, and headless environments.
 
-```js
-async function BrotliCompress(text) {
-  let stream = new Blob([text]).stream();
+## API surface
 
-  stream = stream.pipeThrough(new CompressionStream("brotli"));
-  const res = await new Response(stream);
+- `async BrotliCompress(input: string | Uint8Array): Promise<Uint8Array>` – Encode text or bytes to Brotli-compressed data.
+- `async BrotliDecompress(input: ArrayBuffer | Uint8Array | Buffer): Promise<string>` – Decode Brotli-compressed bytes back to UTF-8 text.
 
-  const blob = await res.blob();
+> [!TIP]
+> Use these functions wherever you would normally pipe through `new CompressionStream("brotli")` and `new DecompressionStream("brotli")`.
 
-  const buffer = await blob.arrayBuffer();
+## Quick start
 
-  return new Uint8Array(buffer);
-}
+Include the script (classic script, not a module) to expose the globals `BrotliCompress` and `BrotliDecompress`:
 
-async function BrotliDecompress(compressed_text) {
-  let stream = new Blob([binary]).stream();
+```html
+<script src="brotli.min.js"></script>
+<script>
+  (async () => {
+    const message = "Hello, Brotli!";
+    const compressed = await BrotliCompress(message);
+    const restored = await BrotliDecompress(compressed);
 
-  stream = stream.pipeThrough(new DecompressionStream("brotli"));
-
-  const res = await new Response(stream);
-  const blob = await res.blob();
-
-  return await blob.text();
-}
+    console.log(restored); // "Hello, Brotli!"
+  })();
+</script>
 ```
 
-## Testing
+### Worker-friendly
 
-This software is implemented as a single file, `brotli.js`. It includes simple tests that can be run in NodeJS 24.7+. It does not use NPM or install any other packages for either deployment or testing.
+```js
+// In a Service Worker or Web Worker
+importScripts("brotli.min.js");
 
-A number of tests are included to confirm that round-triping data values of various shapes and sizes work correctly and match the implementation in Node.
+self.addEventListener("fetch", (event) => {
+  // Forward the request as usual
+  event.respondWith(fetch(event.request));
 
-Test can be run as:
+  // Also compress the body for lightweight logging/analytics
+  event.waitUntil(
+    (async () => {
+      const body = await event.request.clone().text();
+      const compressed = await BrotliCompress(body);
+      await fetch("/log", { method: "POST", body: compressed });
+    })(),
+  );
+});
+```
+
+> [!NOTE]
+> Need a minified build? Run `make` (or `make brotli.min.js`) to generate `brotli.min.js` with no extra tooling or installs.
+
+## Project preferences
+
+- Vanilla JS only: no transpilers, no bundlers, no runtime dependencies.
+- Zero-install workflow: grab `brotli.js`/`brotli.min.js` directly or drop it into your build as-is.
+- Minimal surface area: just the two async functions above—keep additions similarly small and dependency-free.
+
+## Testing and quality
+
+Tests verify three things:
+
+1. Round-trip correctness for diverse inputs (ASCII, Unicode, binary-like data, and large strings).
+2. Native compatibility: Node can decompress what this polyfill compresses.
+3. Byte-for-byte parity with Node for small uncompressed blocks.
+
+Run them with:
 
 ```sh
+make test
+# or
 node test.js
 ```
