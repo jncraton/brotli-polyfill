@@ -14,27 +14,27 @@ The package provides two functions. They are equivalent to the following, but im
 
 ```js
 async function BrotliCompress(text) {
-    let stream = new Blob([text]).stream()
+  let stream = new Blob([text]).stream();
 
-    stream = stream.pipeThrough(new CompressionStream('brotli'))
-    const res = await new Response(stream)
+  stream = stream.pipeThrough(new CompressionStream("brotli"));
+  const res = await new Response(stream);
 
-    const blob = await res.blob()
+  const blob = await res.blob();
 
-    const buffer = await blob.arrayBuffer()
+  const buffer = await blob.arrayBuffer();
 
-    return new Uint8Array(buffer)
+  return new Uint8Array(buffer);
 }
 
 async function BrotliDecompress(compressed_text) {
-    let stream = new Blob([binary]).stream()
+  let stream = new Blob([binary]).stream();
 
-    stream = stream.pipeThrough(new DecompressionStream('brotli'))
+  stream = stream.pipeThrough(new DecompressionStream("brotli"));
 
-    const res = await new Response(stream)
-    const blob = await res.blob()
+  const res = await new Response(stream);
+  const blob = await res.blob();
 
-    return await blob.text()
+  return await blob.text();
 }
 ```
 
