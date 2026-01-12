@@ -86,6 +86,3 @@ make test
 # or
 node test.js
 ```
-
-> [!CAUTION]
-> Linting (`make lint`) uses Prettier and JSHint with no additional dependencies. Keep the zero-deps promise intact when modifying the code or docs.
