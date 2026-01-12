@@ -31,13 +31,13 @@ Include the script (classic script, not a module) to expose the globals `BrotliC
 ```html
 <script src="brotli.min.js"></script>
 <script>
-(async () => {
-  const message = "Hello, Brotli!";
-  const compressed = await BrotliCompress(message);
-  const restored = await BrotliDecompress(compressed);
+  (async () => {
+    const message = "Hello, Brotli!";
+    const compressed = await BrotliCompress(message);
+    const restored = await BrotliDecompress(compressed);
 
-  console.log(restored); // "Hello, Brotli!"
-})();
+    console.log(restored); // "Hello, Brotli!"
+  })();
 </script>
 ```
 
