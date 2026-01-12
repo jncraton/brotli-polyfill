@@ -1,5 +1,9 @@
 # Brotli Polyfill
 
+[![Lint](https://github.com/jncraton/brotli-polyfill/actions/workflows/lint.yml/badge.svg)](https://github.com/jncraton/brotli-polyfill/actions/workflows/lint.yml)
+[![Test](https://github.com/jncraton/brotli-polyfill/actions/workflows/test.yml/badge.svg)](https://github.com/jncraton/brotli-polyfill/actions/workflows/test.yml)
+[![Deploy](https://github.com/jncraton/brotli-polyfill/actions/workflows/deploy.yml/badge.svg)](https://github.com/jncraton/brotli-polyfill/actions/workflows/deploy.yml)
+
 A pure-JS Brotli compression and decompressor for browsers that do not fully support the `brotli` mode in [CompressionStream](https://developer.mozilla.org/en-US/docs/Web/API/CompressionStream).
 
 ## Spec
