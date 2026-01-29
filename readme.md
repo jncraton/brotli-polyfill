@@ -4,6 +4,9 @@
 [![Test](https://github.com/jncraton/brotli-polyfill/actions/workflows/test.yml/badge.svg)](https://github.com/jncraton/brotli-polyfill/actions/workflows/test.yml)
 [![Deploy](https://github.com/jncraton/brotli-polyfill/actions/workflows/deploy.yml/badge.svg)](https://github.com/jncraton/brotli-polyfill/actions/workflows/deploy.yml)
 
+> [!WARNING]
+> This is vibecoded nonsense that does not work properly.
+
 Drop-in Brotli support everywhere—even when browsers ship without it. This polyfill brings RFC 7932 Brotli compression and decompression to environments where `CompressionStream`/`DecompressionStream` lack `"brotli"` support, while staying byte-for-byte compatible with modern runtimes (Node.js 24.7+).
 
 > [!IMPORTANT]
